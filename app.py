@@ -2,7 +2,6 @@ import os
 import json
 import requests
 import threading
-import random
 import time
 from flask import Flask, request
 
@@ -15,7 +14,6 @@ POLLINATIONS_TEXT_URL = "https://text.pollinations.ai/"
 DATA_FILE = "user_data.json"
 USER_DATA = {}
 
-# --- QUẢN LÝ DỮ LIỆU ---
 def load_data():
     global USER_DATA
     try:
@@ -34,15 +32,7 @@ def save_data():
     except Exception as e:
         print(f"Loi save data: {e}")
 
-# Load dữ liệu ngay khi chạy app
 load_data()
-# -----------------------
-
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-]
 
 def get_pollinations_reply(text, user_context):
     series = user_context.get("series", "chung")
@@ -57,32 +47,23 @@ def get_pollinations_reply(text, user_context):
 
     full_prompt = f"{persona}\n\nUser: {text}\nTũn:"
     
-    attempts = [("openai", "POST"), ("searchgpt", "GET"), ("mistral", "GET"), ("qwen", "GET")]
-
-    for model, method in attempts:
-        try:
-            headers = {
-                'Content-Type': 'text/plain',
-                'User-Agent': random.choice(USER_AGENTS)
-            }
+    try:
+        response = requests.post(
+            f"{POLLINATIONS_TEXT_URL}?model=openai",
+            data=full_prompt.encode('utf-8'),
+            headers={'Content-Type': 'text/plain'},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return response.text
+        else:
+            print(f"API Error: {response.status_code}")
+            return "Tũn đang bị lag nhẹ (Lỗi kết nối), bạn hỏi lại sau xíu nha!"
             
-            if method == "POST":
-                url = f"{POLLINATIONS_TEXT_URL}?model={model}"
-                response = requests.post(url, data=full_prompt.encode('utf-8'), headers=headers, timeout=30)
-            else:
-                encoded_prompt = requests.utils.quote(full_prompt)
-                url = f"{POLLINATIONS_TEXT_URL}{encoded_prompt}?model={model}&json=false"
-                response = requests.get(url, headers=headers, timeout=30)
-
-            if response.status_code == 200:
-                return response.text
-            else:
-                print(f"Lỗi Model {model}: {response.status_code}")
-        except Exception as e:
-            print(f"Lỗi kết nối {model}: {e}")
-            continue
-    
-    return "Mạng đang lag quá cậu ơi, hỏi lại câu khác giúp Tũn nha!"
+    except Exception as e:
+        print(f"Request Error: {e}")
+        return "Mạng của Tũn đang chập chờn, đợi chút nhé!"
 
 def send_message(recipient_id, text):
     params = {"access_token": PAGE_ACCESS_TOKEN}
@@ -100,34 +81,32 @@ def send_message(recipient_id, text):
 
 def process_message_thread(sender_id, message_text):
     print(f"--- XU LY TIN NHAN TU: {sender_id} ---")
-    
-    # Kiểm tra và khởi tạo dữ liệu người dùng
+    load_data()
+
     if sender_id not in USER_DATA:
         USER_DATA[sender_id] = {"step": 1, "series": "", "grade": ""}
-        save_data() # Lưu ngay
+        save_data()
         send_message(sender_id, "Hế lô! Tũn đây. Cậu học sách giáo khoa nào? (Cánh diều, Kết nối tri thức...)")
         return
 
     user_info = USER_DATA[sender_id]
     step = user_info["step"]
 
-    # Reset lệnh
     if message_text.lower() in ["reset", "lại", "bat dau", "start"]:
         USER_DATA[sender_id] = {"step": 1, "series": "", "grade": ""}
         save_data()
         send_message(sender_id, "Làm lại nhé! Cậu học sách nào?")
         return
 
-    # Logic hội thoại
     if step == 1:
         user_info["series"] = message_text
         user_info["step"] = 2
-        save_data() # Lưu sau khi cập nhật
+        save_data()
         send_message(sender_id, f"Ok sách '{message_text}'. Thế cậu học lớp mấy?")
     elif step == 2:
         user_info["grade"] = message_text
         user_info["step"] = 3
-        save_data() # Lưu sau khi cập nhật
+        save_data()
         send_message(sender_id, f"Duyệt! Tũn đã sẵn sàng hỗ trợ {user_info['series']} - {user_info['grade']}. Hỏi bài đi!")
     elif step == 3:
         send_message(sender_id, "Tũn đang nghĩ... 🧠")
@@ -154,8 +133,6 @@ def webhook():
                     sender_id = event["sender"]["id"]
                     if event["message"].get("text"):
                         message_text = event["message"]["text"]
-                        # Load lại data mới nhất trước khi xử lý (đề phòng worker khác đã ghi)
-                        load_data()
                         threading.Thread(target=process_message_thread, args=(sender_id, message_text)).start()
     
     return "ok", 200
