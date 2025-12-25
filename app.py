@@ -7,11 +7,14 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
+# --- CẤU HÌNH ---
 PAGE_ACCESS_TOKEN = "EAApvye5uWPcBQVFi6I6WYMXuCWhWbxi3de4sgfr75DZC9xQDmKrGUbg3ACRrxAmVlCs7zF0YQUZAa0KWJynKZB3giJlICtvXZCu3eJuUVxIKX60BE98c4ejqvfhNHeALBd34vnDaYwNBOg4Il4N5uK72hhkaiPu4Lbm7q5MhnDWSulQaTac4JzOj9GboVy0UZAYiH4gZDZD"
 VERIFY_TOKEN = "tun123"
-
 POLLINATIONS_TEXT_URL = "https://text.pollinations.ai/"
 DATA_FILE = "user_data.json"
+PREFIX = "!"  # Ký tự lệnh
+# ----------------
+
 USER_DATA = {}
 
 def load_data():
@@ -39,17 +42,19 @@ def get_pollinations_reply(text, user_context):
     grade = user_context.get("grade", "chung")
     
     persona = (
-        f"Bạn là Tũn, gia sư toàn năng, vui tính. "
-        f"Học sinh đang học sách '{series}' lớp '{grade}'. "
-        "Nhiệm vụ: Giải đáp mọi môn học (Toán, Lý, Hóa, Văn, Anh...) chi tiết, dễ hiểu. "
-        "QUY TẮC: Luôn dùng Tiếng Việt. Giải step-by-step."
+        f"Bạn là Tũn, một gia sư AI vui tính nhưng rất nghiêm túc trong học tập. "
+        f"Học sinh hiện tại đang học lớp '{grade}', bộ sách '{series}'. "
+        "Nhiệm vụ: Giải đáp mọi thắc mắc về Toán, Lý, Hóa, Văn, Anh... một cách chi tiết, dễ hiểu, step-by-step. "
+        "QUY TẮC: Luôn dùng Tiếng Việt. Không nói tục. Nếu gặp câu hỏi không liên quan đến học tập, hãy lái về chuyện học hành một cách khéo léo."
     )
 
     full_prompt = f"{persona}\n\nUser: {text}\nTũn:"
     
     try:
+        # Gửi request đơn giản nhất có thể để tránh lỗi 400
+        # Không cần tham số model, để server tự quyết định
         response = requests.post(
-            f"{POLLINATIONS_TEXT_URL}?model=openai",
+            POLLINATIONS_TEXT_URL,
             data=full_prompt.encode('utf-8'),
             headers={'Content-Type': 'text/plain'},
             timeout=30
@@ -58,17 +63,18 @@ def get_pollinations_reply(text, user_context):
         if response.status_code == 200:
             return response.text
         else:
-            print(f"API Error: {response.status_code}")
-            return "Tũn đang bị lag nhẹ (Lỗi kết nối), bạn hỏi lại sau xíu nha!"
+            print(f"API Error: {response.status_code} - {response.text}")
+            return "Tũn đang bị lỗi kết nối với vũ trụ tri thức rồi (Error 400/500). Bạn thử lại câu ngắn hơn xem?"
             
     except Exception as e:
         print(f"Request Error: {e}")
-        return "Mạng của Tũn đang chập chờn, đợi chút nhé!"
+        return "Mạng lag quá, Tũn load không nổi!"
 
 def send_message(recipient_id, text):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     headers = {"Content-Type": "application/json"}
     
+    # Cắt tin nhắn nếu quá dài (Luật Facebook: max 2000 chars)
     if len(text) > 2000:
         chunks = [text[i:i+1900] for i in range(0, len(text), 1900)]
         for chunk in chunks:
@@ -79,37 +85,79 @@ def send_message(recipient_id, text):
         data = json.dumps({"recipient": {"id": recipient_id}, "message": {"text": text}})
         requests.post("https://graph.facebook.com/v18.0/me/messages", params=params, headers=headers, data=data)
 
+def handle_command(sender_id, command):
+    cmd = command[1:].lower().strip() # Bỏ dấu ! và chuyển thường
+    
+    if cmd == "help":
+        msg = (
+            "📚 HƯỚNG DẪN SỬ DỤNG TŨN 📚\n\n"
+            "Các lệnh cơ bản:\n"
+            "👉 !reset : Xóa thông tin sách/lớp để chọn lại từ đầu.\n"
+            "👉 !info : Xem thông tin về gia sư Tũn.\n"
+            "👉 !ping : Kiểm tra xem Tũn có đang ngủ gật không.\n"
+            "👉 !help : Xem bảng này.\n\n"
+            "Cứ nhắn tin bình thường để hỏi bài nhé!"
+        )
+        send_message(sender_id, msg)
+        return True
+    
+    elif cmd == "reset":
+        USER_DATA[sender_id] = {"step": 1, "series": "", "grade": ""}
+        save_data()
+        send_message(sender_id, "Đã xóa bộ nhớ! 🧹\nGiờ chúng ta làm lại nhé. Cậu đang học bộ sách giáo khoa nào?")
+        return True
+        
+    elif cmd == "info":
+        send_message(sender_id, "Tớ là Tũn, Gia sư AI chạy bằng cơm (điện). Tớ cân tất cả các môn từ Toán đến Văn. Nhớ hỏi bài nha đừng hỏi linh tinh!")
+        return True
+        
+    elif cmd == "ping":
+        send_message(sender_id, "Pong! 🏓 Tũn vẫn đang trực chiến!")
+        return True
+        
+    return False
+
 def process_message_thread(sender_id, message_text):
-    print(f"--- XU LY TIN NHAN TU: {sender_id} ---")
+    print(f"--- NHAN: {message_text} (ID: {sender_id}) ---")
     load_data()
 
+    # 1. Kiểm tra lệnh (Prefix)
+    if message_text.startswith(PREFIX):
+        if handle_command(sender_id, message_text):
+            return
+
+    # 2. Kiểm tra người dùng mới
     if sender_id not in USER_DATA:
         USER_DATA[sender_id] = {"step": 1, "series": "", "grade": ""}
         save_data()
-        send_message(sender_id, "Hế lô! Tũn đây. Cậu học sách giáo khoa nào? (Cánh diều, Kết nối tri thức...)")
+        send_message(sender_id, "Hế lô! Tũn đây 👋\nĐể Tũn chỉ bài cho chuẩn, cậu đang học bộ sách nào? (Cánh diều, Kết nối tri thức...)")
         return
 
     user_info = USER_DATA[sender_id]
     step = user_info["step"]
 
-    if message_text.lower() in ["reset", "lại", "bat dau", "start"]:
-        USER_DATA[sender_id] = {"step": 1, "series": "", "grade": ""}
-        save_data()
-        send_message(sender_id, "Làm lại nhé! Cậu học sách nào?")
-        return
-
+    # 3. Logic hội thoại (State Machine)
     if step == 1:
         user_info["series"] = message_text
         user_info["step"] = 2
         save_data()
-        send_message(sender_id, f"Ok sách '{message_text}'. Thế cậu học lớp mấy?")
+        send_message(sender_id, f"Ghi nhận sách '{message_text}'. 📚\nThế cậu đang học lớp mấy?")
+        
     elif step == 2:
         user_info["grade"] = message_text
         user_info["step"] = 3
         save_data()
-        send_message(sender_id, f"Duyệt! Tũn đã sẵn sàng hỗ trợ {user_info['series']} - {user_info['grade']}. Hỏi bài đi!")
+        send_message(sender_id, f"Tuyệt! Tũn sẽ hỗ trợ chương trình {user_info['series']} - {user_info['grade']}.\nGiờ cậu gửi bài tập qua đây, môn nào cũng được!")
+        
     elif step == 3:
-        send_message(sender_id, "Tũn đang nghĩ... 🧠")
+        # Nếu người dùng muốn đổi thông tin mà không dùng lệnh
+        if message_text.lower() in ["đổi sách", "chọn lại", "reset"]:
+            USER_DATA[sender_id] = {"step": 1, "series": "", "grade": ""}
+            save_data()
+            send_message(sender_id, "Okie, chọn lại sách nào?")
+            return
+
+        send_message(sender_id, "Tũn đang giải... ✍️")
         reply = get_pollinations_reply(message_text, user_info)
         send_message(sender_id, reply)
 
